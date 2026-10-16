@@ -1,0 +1,79 @@
+name: "Frontend deploy"
+
+run-name: "Frontend ${{ inputs.env }}: ${{ inputs.sha }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Environment"
+        required: true
+      run_id:
+        description: "Run ID"
+        required: true
+      sha:
+        description: "Commit"
+        required: true
+
+permissions: {}
+
+# A newer deploy replaces the buttons still waiting for an older one.
+concurrency:
+  group: frontend-${{ inputs.env }}
+  cancel-in-progress: true
+
+env:
+  REPOSITORY: platform
+  RUN_ID: ${{ inputs.run_id }}
+
+jobs:
+  switch:
+    name: "Switch traffic"
+    runs-on: ubuntu-24.04
+    environment: frontend-${{ inputs.env }}
+    timeout-minutes: 20
+    steps:
+    - &check
+      name: Check inputs
+      env:
+        ENVIRONMENT: ${{ inputs.env }}
+        SHA: ${{ inputs.sha }}
+      run: |
+        [[ "$ENVIRONMENT" =~ ^[a-z0-9-]+$ && "$RUN_ID" =~ ^[0-9]+$ && "$SHA" =~ ^[0-9a-f]{7,40}$ ]] \
+          || { echo "::error::malformed inputs"; exit 1; }
+
+    - &checkout
+      uses: actions/checkout@v7
+      with:
+        sparse-checkout: .github/scripts
+
+    - &token
+      name: Token
+      id: token
+      uses: actions/create-github-app-token@v3
+      with:
+        client-id: ${{ vars.GATE_APP_CLIENT_ID }}
+        private-key: ${{ secrets.GATE_APP_PRIVATE_KEY }}
+        repositories: ${{ env.REPOSITORY }}
+        permission-actions: write
+
+    - name: Switch
+      env:
+        GH_TOKEN: ${{ steps.token.outputs.token }}
+      run: bash .github/scripts/rerun-job.sh "$GITHUB_REPOSITORY_OWNER/$REPOSITORY" "$RUN_ID" Switch
+
+  # Optional: without it the old slot stops at the end of the skew window.
+  stop-old:
+    name: "Stop the old slot now"
+    needs: switch
+    runs-on: ubuntu-24.04
+    environment: frontend-${{ inputs.env }}
+    timeout-minutes: 20
+    steps:
+    - *check
+    - *checkout
+    - *token
+    - name: Stop
+      env:
+        GH_TOKEN: ${{ steps.token.outputs.token }}
+      run: bash .github/scripts/rerun-job.sh "$GITHUB_REPOSITORY_OWNER/$REPOSITORY" "$RUN_ID" Switch
