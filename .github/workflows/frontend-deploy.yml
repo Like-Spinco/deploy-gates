@@ -27,11 +27,11 @@ env:
   RUN_ID: ${{ inputs.run_id }}
 
 jobs:
-  switch:
-    name: "Switch traffic"
+  # No environment, so the links are on the run page before anyone approves.
+  info:
+    name: Release
     runs-on: ubuntu-24.04
-    environment: frontend-${{ inputs.env }}
-    timeout-minutes: 20
+    timeout-minutes: 5
     steps:
     - &check
       name: Check inputs
@@ -41,6 +41,29 @@ jobs:
       run: |
         [[ "$ENVIRONMENT" =~ ^[a-z0-9-]+$ && "$RUN_ID" =~ ^[0-9]+$ && "$SHA" =~ ^[0-9a-f]{7,40}$ ]] \
           || { echo "::error::malformed inputs"; exit 1; }
+
+    - name: Links
+      env:
+        ENVIRONMENT: ${{ inputs.env }}
+        SHA: ${{ inputs.sha }}
+      run: |
+        base="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY_OWNER/$REPOSITORY"
+        {
+          echo "### Frontend \`$ENVIRONMENT\`"
+          echo "- Platform run: $base/actions/runs/$RUN_ID"
+          echo "- Commit: $base/commit/$SHA"
+        } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  switch:
+    name: "Switch traffic"
+    needs: info
+    runs-on: ubuntu-24.04
+    environment: &environment
+      name: frontend-${{ inputs.env }}
+      url: ${{ github.server_url }}/${{ github.repository_owner }}/${{ env.REPOSITORY }}/actions/runs/${{ inputs.run_id }}
+    timeout-minutes: 20
+    steps:
+    - *check
 
     - &checkout
       uses: actions/checkout@v7
@@ -67,7 +90,7 @@ jobs:
     name: "Stop the old slot now"
     needs: switch
     runs-on: ubuntu-24.04
-    environment: frontend-${{ inputs.env }}
+    environment: *environment
     timeout-minutes: 20
     steps:
     - *check
