@@ -58,18 +58,20 @@ jobs:
     name: "Switch traffic"
     needs: info
     runs-on: ubuntu-24.04
-    environment:
+    environment: &environment
       name: frontend-${{ inputs.env }}
       url: ${{ github.server_url }}/${{ github.repository_owner }}/${{ env.REPOSITORY }}/actions/runs/${{ inputs.run_id }}
     timeout-minutes: 20
     steps:
     - *check
 
-    - uses: actions/checkout@v7
+    - &checkout
+      uses: actions/checkout@v7
       with:
         sparse-checkout: .github/scripts
 
-    - name: Token
+    - &token
+      name: Token
       id: token
       uses: actions/create-github-app-token@v3
       with:
@@ -79,6 +81,22 @@ jobs:
         permission-actions: write
 
     - name: Switch
+      env:
+        GH_TOKEN: ${{ steps.token.outputs.token }}
+      run: bash .github/scripts/rerun-job.sh "$GITHUB_REPOSITORY_OWNER/$REPOSITORY" "$RUN_ID" Switch
+
+  # Optional: without it the old slot stops at the end of the skew window.
+  stop-old:
+    name: "Stop the old slot now"
+    needs: switch
+    runs-on: ubuntu-24.04
+    environment: *environment
+    timeout-minutes: 20
+    steps:
+    - *check
+    - *checkout
+    - *token
+    - name: Stop
       env:
         GH_TOKEN: ${{ steps.token.outputs.token }}
       run: bash .github/scripts/rerun-job.sh "$GITHUB_REPOSITORY_OWNER/$REPOSITORY" "$RUN_ID" Switch
