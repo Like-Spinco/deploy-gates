@@ -56,6 +56,8 @@ list the channel members) and must be invited to the channel.
 - The card is posted once and edited at each stage, which never notifies anyone.
 - Waiting for approval, deployed, failed and cancelled also get a reply in the card's
   thread that mentions every channel member: `@channel` is silent in threads.
+- Once approved, the Approval stage links the gate run and names the approver; the done card
+  shows the total time, split into the pipeline and the wait for approval.
 - With no token or channel the action does nothing; Slack errors are warnings and never
   fail a deploy.
 

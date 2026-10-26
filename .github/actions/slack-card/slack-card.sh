@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # slack-card.sh <state>: posts the release card, or redraws it when SLACK_TS is set.
 #   states: start, running:<Stage>, waiting:<Stage>, done, failed:<Stage>, cancelled
-# Env: SLACK_TOKEN, SLACK_CHANNEL, SLACK_TS, SLACK_META (JSON: app, environment, stages, sha, subject, author, actor, run_url),
-#   APPROVE_URL, JOB_URL (the current stage), LINKS (JSON: stage -> URL), NOTE (context line).
+# Env: SLACK_TOKEN, SLACK_CHANNEL, SLACK_TS, SLACK_META (JSON: app, environment, stages, sha, subject, author, actor, run_url, started),
+#   APPROVE_URL, JOB_URL (the current stage), LINKS (JSON: stage -> URL), NOTE (context line), GH_TOKEN (reads deploy-gates).
 # Writes ts= on a post. Slack trouble never fails a deploy: every error is a warning.
 set -uo pipefail
 
@@ -13,6 +13,14 @@ meta_json=${SLACK_META:-}
 [ -n "$meta_json" ] || meta_json='{}'
 meta() { jq -r --arg k "$1" '.[$k] // ""' <<<"$meta_json"; }
 esc() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<<"$1"; }
+gh_api() { curl -sS --max-time 15 -H "Accept: application/vnd.github+json" ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} \
+  "${GITHUB_API_URL:-https://api.github.com}/$1"; }
+dur() {
+  local t=$1
+  if [ "$t" -ge 3600 ]; then printf '%dh %02dm' $((t / 3600)) $((t % 3600 / 60))
+  elif [ "$t" -ge 60 ]; then printf '%dm %02ds' $((t / 60)) $((t % 60))
+  else printf '%ds' "$t"; fi
+}
 api() { curl -sS --max-time 15 -X POST "https://slack.com/api/$1" -H "Authorization: Bearer $SLACK_TOKEN" \
   -H "Content-Type: application/json; charset=utf-8" --data "$2"; }
 
@@ -33,6 +41,29 @@ case "$state" in
   *) echo "::warning title=Slack::unknown state $state"; exit 0 ;;
 esac
 
+# Once approved: link the gate run, name who approved it and how long it waited.
+approval_at=-1 current_at=-1
+for i in "${!stages[@]}"; do
+  [ "${stages[$i]}" = Approval ] && approval_at=$i
+  [ "${stages[$i]}" = "$current" ] && current_at=$i
+done
+gate_url="" approver="" waited=""
+if [ "$approval_at" -ge 0 ] && [ -n "$sha" ] && { [ "$state" = "done" ] || [ "$current_at" -gt "$approval_at" ]; }; then
+  gates="repos/${GITHUB_REPOSITORY%%/*}/deploy-gates/actions/runs"
+  gate=$(gh_api "$gates?event=workflow_dispatch&per_page=50" 2>/dev/null \
+    | jq -c --arg t " $env: ${sha:0:12}" '[.workflow_runs[]? | select(.display_title | endswith($t))][0] // empty' 2>/dev/null)
+  if [ -n "$gate" ]; then
+    gate_id=$(jq -r .id <<<"$gate")
+    gate_url=$(jq -r .html_url <<<"$gate")
+    approver=$(gh_api "$gates/$gate_id/approvals" 2>/dev/null | jq -r '[.[]? | select(.state == "approved") | .user.login][0] // ""' 2>/dev/null)
+    approved=$(gh_api "$gates/$gate_id/jobs" 2>/dev/null \
+      | jq -r '[.jobs[]? | select(.name != "Release" and (.steps | length) > 0) | .started_at][0] // ""' 2>/dev/null)
+    if [ -n "$approved" ]; then
+      waited=$(jq -rn --arg a "$approved" --arg c "$(jq -r .created_at <<<"$gate")" '($a | fromdateiso8601) - ($c | fromdateiso8601)' 2>/dev/null)
+    fi
+  fi
+fi
+
 links_json=${LINKS:-}
 [ -n "$links_json" ] || links_json='{}'
 line="" seen=""
@@ -50,17 +81,35 @@ for s in "${stages[@]}"; do
   fi
   url=$(jq -r --arg s "$s" '.[$s] // ""' <<<"$links_json")
   [ "$s" = "$current" ] && [ -n "${JOB_URL:-}" ] && url=$JOB_URL
+  name=$s
+  if [ "$mark" = "✅" ]; then
+    case "$s" in
+      Approval) name="Approved${approver:+ by $approver}" url=${gate_url:-$url} ;;
+      Switch) name="Switched" ;;
+    esac
+  fi
   if [ "$state" = "waiting:$s" ] && [ -n "${APPROVE_URL:-}" ]; then
     label="*<$APPROVE_URL|Approve>*"
   elif [ -n "$url" ]; then
-    label="<$url|$s>"
+    label="<$url|$name>"
   elif [ "$mark" = "✅" ] || [ "$mark" = "❌" ] || [ "$s" = "$current" ]; then
-    label="<$run_url|$s>"
+    label="<$run_url|$name>"
   else
-    label=$s
+    label=$name
   fi
   line+="${line:+   }$mark $label"
 done
+
+note=${NOTE:-}
+started=$(meta started)
+if [ "$state" = "done" ] && [[ "$started" =~ ^[0-9]+$ ]]; then
+  total=$(( $(date +%s) - started ))
+  timing="⏱ $(dur "$total")"
+  if [[ "$waited" =~ ^[0-9]+$ ]] && [ "$waited" -lt "$total" ]; then
+    timing+=" total  ·  $(dur $((total - waited))) pipeline  ·  $(dur "$waited") waiting for approval"
+  fi
+  note="$timing${note:+  ·  $note}"
+fi
 
 repo_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}"
 title="$header: *$app → $env*"
@@ -71,7 +120,7 @@ else
 fi
 
 payload=$(jq -nc --arg channel "$SLACK_CHANNEL" --arg ts "${SLACK_TS:-}" --arg text "$header: $app → $env ${sha:0:7}" \
-  --arg title "$title" --arg commit "$commit" --arg line "$line" --arg note "${NOTE:-}" '
+  --arg title "$title" --arg commit "$commit" --arg line "$line" --arg note "$note" '
   {channel: $channel, text: $text, unfurl_links: false, unfurl_media: false,
    blocks: ([
      {type: "section", text: {type: "mrkdwn", text: ($title + "\n" + $commit)}},
@@ -96,7 +145,7 @@ echo "Slack: $state"
 release="*$app → $env*${sha:+ \`${sha:0:7}\`}"
 case "$state" in
   waiting:*) note="⏳ $release is waiting for approval${APPROVE_URL:+: *<$APPROVE_URL|Approve>*}" ;;
-  done) note="🟢 $release deployed" ;;
+  done) note="🟢 $release deployed${total:+ in $(dur "$total")}" ;;
   cancelled) note="⚪ $release cancelled" ;;
   failed:*) note="🔴 $release failed at ${state#failed:}: <${JOB_URL:-$run_url}|View in GitHub Actions>" ;;
   *) exit 0 ;;

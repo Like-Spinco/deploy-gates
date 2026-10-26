@@ -54,7 +54,7 @@ inputs:
     required: false
     default: ""
   github-token:
-    description: "Reads the commit on start"
+    description: "Reads the commit on start and the approval in deploy-gates"
     required: false
     default: ${{ github.token }}
 
@@ -88,7 +88,7 @@ runs:
       [ -z "$REF" ] || commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$REF" 2>/dev/null) || commit='{}'
       jq -c --arg app "${APP:-${GITHUB_REPOSITORY#*/}}" --arg env "$ENVIRONMENT" --arg stages "$STAGES" --arg actor "$GITHUB_ACTOR" \
         --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{
-        app: $app, environment: $env, stages: $stages, actor: $actor, run_url: $run_url,
+        app: $app, environment: $env, stages: $stages, actor: $actor, run_url: $run_url, started: now | floor,
         sha: (.sha // ""), subject: ((.commit.message // "") | split("\n")[0] // ""), author: (.author.login // .commit.author.name // "")
       }' <<<"$commit" | sed 's/^/meta=/' >> "$GITHUB_OUTPUT"
 
@@ -104,4 +104,5 @@ runs:
       LINKS: ${{ inputs.links }}
       NOTE: ${{ inputs.note }}
       STATE: ${{ inputs.state }}
+      GH_TOKEN: ${{ inputs.github-token }}
     run: bash "$GITHUB_ACTION_PATH/slack-card.sh" "$STATE"
