@@ -28,7 +28,7 @@ outputs of the others, so the deploy gets the image built in attempt 1.
 | Path | What |
 |---|---|
 | `.github/workflows/approve.yml` | the gate: one Approve button per `<repository>-<env>` |
-| `.github/workflows/frontend-deploy.yml` | the frontend's gate: Switch traffic, then optionally stop the old slot |
+| `.github/workflows/frontend-deploy.yml` | the frontend's gate: Switch traffic; re-running the platform Switch job once more stops the old slot early |
 | `.github/actions/request-approval` | used by an app's `Approve` job: dispatches `approve.yml`, returns the approval page |
 | `.github/actions/slack-card` | one Slack message per release, redrawn at every stage |
 | `.github/scripts/rerun-job.sh` | re-runs the held job and waits for the result |
@@ -58,7 +58,9 @@ list the channel members) and must be invited to the channel.
   thread that mentions every channel member: `@channel` is silent in threads.
 - Once approved, the Approval stage links the gate run and names the approver.
 - `times` (JSON stage -> seconds) puts how long a finished stage took on its label, e.g.
-  `Deployed in 1m 59s`, `Switched in 9s`; the done reply repeats the switch or deploy time.
+  `Built in 4m 28s`, `Deployed in 1m 59s`, `Switched in 9s`; several objects are merged.
+- The done card names the time from approval to live, the done reply repeats it with the switch
+  or deploy time, and the waiting reply says how long after the start the release was ready.
 - With no token or channel the action does nothing; Slack errors are warnings and never
   fail a deploy.
 

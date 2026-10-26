@@ -50,7 +50,7 @@ inputs:
     required: false
     default: ""
   times:
-    description: "JSON of stage -> seconds it took, shown on finished stages"
+    description: "JSON of stage -> seconds it took, shown on finished stages; several objects are merged, empty values skipped"
     required: false
     default: ""
   note:
@@ -92,7 +92,7 @@ runs:
       [ -z "$REF" ] || commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$REF" 2>/dev/null) || commit='{}'
       jq -c --arg app "${APP:-${GITHUB_REPOSITORY#*/}}" --arg env "$ENVIRONMENT" --arg stages "$STAGES" --arg actor "$GITHUB_ACTOR" \
         --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{
-        app: $app, environment: $env, stages: $stages, actor: $actor, run_url: $run_url,
+        app: $app, environment: $env, stages: $stages, actor: $actor, run_url: $run_url, started: now | floor,
         sha: (.sha // ""), subject: ((.commit.message // "") | split("\n")[0] // ""), author: (.author.login // .commit.author.name // "")
       }' <<<"$commit" | sed 's/^/meta=/' >> "$GITHUB_OUTPUT"
 

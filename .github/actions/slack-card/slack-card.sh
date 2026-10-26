@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # slack-card.sh <state>: posts the release card, or redraws it when SLACK_TS is set.
 #   states: start, running:<Stage>, waiting:<Stage>, done, failed:<Stage>, cancelled
-# Env: SLACK_TOKEN, SLACK_CHANNEL, SLACK_TS, SLACK_META (JSON: app, environment, stages, sha, subject, author, actor, run_url),
+# Env: SLACK_TOKEN, SLACK_CHANNEL, SLACK_TS, SLACK_META (JSON: app, environment, stages, sha, subject, author, actor, run_url, started),
 #   APPROVE_URL, JOB_URL (the current stage), LINKS (JSON: stage -> URL), TIMES (JSON: stage -> seconds), NOTE (context line),
 #   GH_TOKEN (reads deploy-gates).
 # Writes ts= on a post. Slack trouble never fails a deploy: every error is a warning.
@@ -42,13 +42,13 @@ case "$state" in
   *) echo "::warning title=Slack::unknown state $state"; exit 0 ;;
 esac
 
-# Once approved: link the gate run and name who approved it.
+# Once approved: link the gate run, name who approved it and when.
 approval_at=-1 current_at=-1
 for i in "${!stages[@]}"; do
   [ "${stages[$i]}" = Approval ] && approval_at=$i
   [ "${stages[$i]}" = "$current" ] && current_at=$i
 done
-gate_url="" approver=""
+gate_url="" approver="" approved_at=""
 if [ "$approval_at" -ge 0 ] && [ -n "$sha" ] && { [ "$state" = "done" ] || [ "$current_at" -gt "$approval_at" ]; }; then
   gates="repos/${GITHUB_REPOSITORY%%/*}/deploy-gates/actions/runs"
   gate=$(gh_api "$gates?event=workflow_dispatch&per_page=50" 2>/dev/null \
@@ -57,14 +57,24 @@ if [ "$approval_at" -ge 0 ] && [ -n "$sha" ] && { [ "$state" = "done" ] || [ "$c
     gate_id=$(jq -r .id <<<"$gate")
     gate_url=$(jq -r .html_url <<<"$gate")
     approver=$(gh_api "$gates/$gate_id/approvals" 2>/dev/null | jq -r '[.[]? | select(.state == "approved") | .user.login][0] // ""' 2>/dev/null)
+    # A job waiting for approval has no steps; its started_at is when it was created.
+    approved_at=$(gh_api "$gates/$gate_id/jobs" 2>/dev/null \
+      | jq -r '[.jobs[]? | select(.name != "Release" and (.steps | length) > 0) | .started_at | fromdateiso8601][0] // ""' 2>/dev/null)
   fi
 fi
 
 links_json=${LINKS:-}
 [ -n "$links_json" ] || links_json='{}'
-times_json=${TIMES:-}
+# TIMES may hold several objects; later non-empty values win.
+times_json=$(jq -sc 'map(with_entries(select(.value != "" and .value != null))) | add // {}' <<<"${TIMES:-}" 2>/dev/null)
 [ -n "$times_json" ] || times_json='{}'
-took() { local t; t=$(jq -r --arg s "$1" '.[$s] // ""' <<<"$times_json" 2>/dev/null); [[ "$t" =~ ^[0-9]+$ ]] && dur "$t"; }
+took() {
+  local t
+  t=$(jq -r --arg s "$1" '.[$s] // ""' <<<"$times_json" 2>/dev/null)
+  [[ "$t" =~ ^[0-9]+$ ]] && dur "$t"
+}
+live_after=""
+[ "$state" = "done" ] && [[ "$approved_at" =~ ^[0-9]+$ ]] && live_after=$(dur $(( $(date +%s) - approved_at )))
 line="" seen=""
 for s in "${stages[@]}"; do
   if [ "$state" = "done" ]; then
@@ -84,7 +94,8 @@ for s in "${stages[@]}"; do
   if [ "$mark" = "✅" ]; then
     t=$(took "$s")
     case "$s" in
-      Approval) name="Approved${approver:+ by $approver}" url=${gate_url:-$url} ;;
+      Approval) name="Approved${approver:+ by $approver}${live_after:+ · live in $live_after}" url=${gate_url:-$url} ;;
+      Build) name="Built${t:+ in $t}" ;;
       Deploy) name="Deployed${t:+ in $t}" ;;
       Switch) name="Switched${t:+ in $t}" ;;
       *) name="$s${t:+ · $t}" ;;
@@ -137,11 +148,15 @@ echo "Slack: $state"
 # chat.update never notifies, so these states get a thread reply naming every channel member; @channel is silent in threads.
 release="*$app → $env*${sha:+ \`${sha:0:7}\`}"
 case "$state" in
-  waiting:*) note="⏳ $release is waiting for approval${APPROVE_URL:+: *<$APPROVE_URL|Approve>*}" ;;
+  waiting:*)
+    started=$(meta started) ready=""
+    [[ "$started" =~ ^[0-9]+$ ]] && ready=", $(dur $(( $(date +%s) - started ))) after the start"
+    note="⏳ $release is ready for approval$ready${APPROVE_URL:+: *<$APPROVE_URL|Approve>*}" ;;
   done)
     if t=$(took Switch); then note="🟢 $release is live: traffic switched in $t"
     elif t=$(took Deploy); then note="🟢 $release deployed in $t"
-    else note="🟢 $release deployed"; fi ;;
+    else note="🟢 $release deployed"; fi
+    note+="${live_after:+, $live_after after approval}" ;;
   cancelled) note="⚪ $release cancelled" ;;
   failed:*) note="🔴 $release failed at ${state#failed:}: <${JOB_URL:-$run_url}|View in GitHub Actions>" ;;
   *) exit 0 ;;
