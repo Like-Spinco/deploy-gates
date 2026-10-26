@@ -28,7 +28,7 @@ outputs of the others, so the deploy gets the image built in attempt 1.
 | Path | What |
 |---|---|
 | `.github/workflows/approve.yml` | the gate: one Approve button per `<repository>-<env>` |
-| `.github/workflows/frontend-deploy.yml` | the frontend's gate: Switch traffic; re-running the platform Switch job once more stops the old slot early |
+| `.github/workflows/frontend-deploy.yml` | the frontend's gate: Switch traffic, then optionally stop the old slot |
 | `.github/actions/request-approval` | used by an app's `Approve` job: dispatches `approve.yml`, returns the approval page |
 | `.github/actions/slack-card` | one Slack message per release, redrawn at every stage |
 | `.github/scripts/rerun-job.sh` | re-runs the held job and waits for the result |
