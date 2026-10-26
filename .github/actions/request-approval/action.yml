@@ -1,0 +1,55 @@
+name: "Request approval"
+description: "Opens an Approve button in deploy-gates for this run; approving it re-runs the named job of this run."
+
+inputs:
+  client-id:
+    description: "Client ID of the gate GitHub App"
+    required: true
+  private-key:
+    description: "Private key of the gate GitHub App"
+    required: true
+  environment:
+    description: "dev or prod: the button lives in the deploy-gates environment <repository>-<environment>"
+    required: true
+  sha:
+    description: "Commit being released"
+    required: true
+  job:
+    description: "Job of this run that approval re-runs; it must deploy on attempt 2+"
+    required: false
+    default: "Approve"
+
+outputs:
+  url:
+    description: "The approval page"
+    value: ${{ steps.dispatch.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+  - id: token
+    uses: actions/create-github-app-token@v3
+    with:
+      client-id: ${{ inputs.client-id }}
+      private-key: ${{ inputs.private-key }}
+      owner: ${{ github.repository_owner }}
+      repositories: deploy-gates
+      permission-actions: write
+
+  - id: dispatch
+    shell: bash
+    env:
+      GH_TOKEN: ${{ steps.token.outputs.token }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      SHA: ${{ inputs.sha }}
+      JOB: ${{ inputs.job }}
+    run: |
+      gates="$GITHUB_REPOSITORY_OWNER/deploy-gates"
+      dispatch=$(gh api -X POST "repos/$gates/actions/workflows/approve.yml/dispatches" -f ref=main -F return_run_details=true \
+        -f "inputs[repository]=${GITHUB_REPOSITORY#*/}" -f "inputs[env]=$ENVIRONMENT" -f "inputs[run_id]=$GITHUB_RUN_ID" \
+        -f "inputs[sha]=$(cut -c1-12 <<<"$SHA")" -f "inputs[job]=$JOB")
+      url=$(jq -r '.html_url // empty' <<<"$dispatch" 2>/dev/null || true)
+      url=${url:-$GITHUB_SERVER_URL/$gates/actions/workflows/approve.yml}
+      echo "url=$url" >> "$GITHUB_OUTPUT"
+      echo "::notice title=Waiting for approval::$url"
+      echo "Not deployed yet. **[Approve]($url)** in deploy-gates, or re-run the $JOB job of this run." >> "$GITHUB_STEP_SUMMARY"

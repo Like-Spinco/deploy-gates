@@ -1,0 +1,107 @@
+name: "Slack release card"
+description: "Posts one Slack message per release and redraws it at each stage; waits, results and failures also get a thread reply that mentions the channel members."
+
+inputs:
+  state:
+    description: "start, running:<Stage>, waiting:<Stage>, done, failed:<Stage> or cancelled"
+    required: true
+  token:
+    description: "Slack bot token (chat:write, channels:read, groups:read); empty skips Slack"
+    required: false
+    default: ""
+  channel:
+    description: "Slack channel ID; empty skips Slack"
+    required: false
+    default: ""
+  ts:
+    description: "Card to redraw: the ts output of the start call"
+    required: false
+    default: ""
+  meta:
+    description: "The meta output of the start call"
+    required: false
+    default: ""
+  stages:
+    description: "start: space-separated stages, e.g. 'Build Approval Deploy'"
+    required: false
+    default: "Build Deploy"
+  app:
+    description: "start: name on the card (default: the repository name)"
+    required: false
+    default: ""
+  environment:
+    description: "start: environment on the card"
+    required: false
+    default: ""
+  ref:
+    description: "start: commit, branch or tag the release is built from (empty: no commit line)"
+    required: false
+    default: ""
+  check-run-id:
+    description: "job.check_run_id of the calling job, so its stage links to it"
+    required: false
+    default: ""
+  approve-url:
+    description: "waiting: the approval page"
+    required: false
+    default: ""
+  links:
+    description: "JSON of stage -> URL for stages run by other jobs"
+    required: false
+    default: ""
+  note:
+    description: "Context line under the stages"
+    required: false
+    default: ""
+  github-token:
+    description: "Reads the commit on start"
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  ts:
+    description: "ID of the posted card"
+    value: ${{ steps.card.outputs.ts }}
+  meta:
+    description: "What the card is drawn from; pass it to the later calls"
+    value: ${{ steps.meta.outputs.meta }}
+
+runs:
+  using: composite
+  steps:
+  - id: meta
+    shell: bash
+    env:
+      STATE: ${{ inputs.state }}
+      META: ${{ inputs.meta }}
+      GH_TOKEN: ${{ inputs.github-token }}
+      APP: ${{ inputs.app }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      STAGES: ${{ inputs.stages }}
+      REF: ${{ inputs.ref }}
+    run: |
+      if [ "$STATE" != start ]; then
+        echo "meta=$META" >> "$GITHUB_OUTPUT"
+        exit 0
+      fi
+      commit='{}'
+      [ -z "$REF" ] || commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$REF" 2>/dev/null) || commit='{}'
+      jq -c --arg app "${APP:-${GITHUB_REPOSITORY#*/}}" --arg env "$ENVIRONMENT" --arg stages "$STAGES" --arg actor "$GITHUB_ACTOR" \
+        --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{
+        app: $app, environment: $env, stages: $stages, actor: $actor, run_url: $run_url,
+        sha: (.sha // ""), subject: ((.commit.message // "") | split("\n")[0] // ""), author: (.author.login // .commit.author.name // "")
+      }' <<<"$commit" | sed 's/^/meta=/' >> "$GITHUB_OUTPUT"
+
+  - id: card
+    shell: bash
+    env:
+      SLACK_TOKEN: ${{ inputs.token }}
+      SLACK_CHANNEL: ${{ inputs.channel }}
+      SLACK_TS: ${{ inputs.ts }}
+      SLACK_META: ${{ steps.meta.outputs.meta }}
+      APPROVE_URL: ${{ inputs.approve-url }}
+      JOB_URL: ${{ inputs.check-run-id != '' && format('{0}/{1}/actions/runs/{2}/job/{3}', github.server_url, github.repository, github.run_id, inputs.check-run-id) || '' }}
+      LINKS: ${{ inputs.links }}
+      NOTE: ${{ inputs.note }}
+      STATE: ${{ inputs.state }}
+    run: bash "$GITHUB_ACTION_PATH/slack-card.sh" "$STATE"

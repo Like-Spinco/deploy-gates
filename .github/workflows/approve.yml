@@ -1,0 +1,97 @@
+name: "Deploy approval"
+
+run-name: "${{ inputs.repository }} ${{ inputs.env }}: ${{ inputs.sha }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: "Repository of the held run"
+        required: true
+      env:
+        description: "Environment"
+        required: true
+      run_id:
+        description: "Run ID"
+        required: true
+      sha:
+        description: "Commit"
+        required: true
+      job:
+        description: "Job of the run that approval re-runs"
+        required: false
+        default: "Approve"
+
+permissions: {}
+
+# A newer release replaces the button still waiting for an older one.
+concurrency:
+  group: ${{ inputs.repository }}-${{ inputs.env }}
+  cancel-in-progress: true
+
+env:
+  REPOSITORY: ${{ inputs.repository }}
+  ENVIRONMENT: ${{ inputs.env }}
+  RUN_ID: ${{ inputs.run_id }}
+  SHA: ${{ inputs.sha }}
+  JOB: ${{ inputs.job }}
+
+jobs:
+  # No environment, so the links are on the run page before anyone approves.
+  info:
+    name: Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+    - name: Check inputs
+      run: |
+        [[ "$REPOSITORY" =~ ^[A-Za-z0-9._-]+$ && "$ENVIRONMENT" =~ ^[a-z0-9-]+$ && "$RUN_ID" =~ ^[0-9]+$ \
+          && "$SHA" =~ ^[0-9a-f]{7,40}$ && "$JOB" =~ ^[A-Za-z0-9\ ._-]+$ ]] || { echo "::error::malformed inputs"; exit 1; }
+
+    # An environment a job names but nobody created is created on the fly, without reviewers.
+    - name: Check the gate
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gate="$REPOSITORY-$ENVIRONMENT"
+        rules=$(gh api "repos/$GITHUB_REPOSITORY/environments/$gate" --jq '[.protection_rules[]?.type] | join(",")' 2>/dev/null) \
+          || { echo "::error::environment $gate does not exist in $GITHUB_REPOSITORY; create it with required reviewers"; exit 1; }
+        [[ ",$rules," == *,required_reviewers,* ]] || { echo "::error::environment $gate has no required reviewers"; exit 1; }
+
+    - name: Links
+      run: |
+        base="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY_OWNER/$REPOSITORY"
+        {
+          echo "### $REPOSITORY \`$ENVIRONMENT\`"
+          echo "- Run: $base/actions/runs/$RUN_ID"
+          echo "- Commit: $base/commit/$SHA"
+        } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  approve:
+    name: "Approve"
+    needs: info
+    runs-on: ubuntu-24.04
+    environment:
+      name: ${{ inputs.repository }}-${{ inputs.env }}
+      url: ${{ github.server_url }}/${{ github.repository_owner }}/${{ inputs.repository }}/actions/runs/${{ inputs.run_id }}
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        sparse-checkout: .github/scripts
+
+    - name: Token
+      id: token
+      uses: actions/create-github-app-token@v3
+      with:
+        client-id: ${{ vars.GATE_APP_CLIENT_ID }}
+        private-key: ${{ secrets.GATE_APP_PRIVATE_KEY }}
+        repositories: ${{ inputs.repository }}
+        permission-actions: write
+
+    - name: Deploy
+      env:
+        GH_TOKEN: ${{ steps.token.outputs.token }}
+      run: bash .github/scripts/rerun-job.sh "$GITHUB_REPOSITORY_OWNER/$REPOSITORY" "$RUN_ID" "$JOB"
