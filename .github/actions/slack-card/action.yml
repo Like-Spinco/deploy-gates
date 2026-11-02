@@ -98,12 +98,19 @@ runs:
       pr='{}' p2=$(jq -r '.parents[1].sha // empty' <<<"$commit")
       [ -z "$p2" ] || pr=$(gh api "repos/$GITHUB_REPOSITORY/commits/$p2" --jq '{login: (.author.login // ""), email: (.commit.author.email // "")}' 2>/dev/null) || pr='{}'
       jq -e 'type == "object"' <<<"$pr" >/dev/null 2>&1 || pr='{}'
+      actor_email=""
+      if [ "$GITHUB_EVENT_NAME" = push ] || [ "$(jq -r '.author.login // ""' <<<"$commit")" = "$GITHUB_ACTOR" ]; then
+        actor_email=$(jq -r '.commit.author.email // ""' <<<"$commit")
+      fi
+      # A manual run of someone else's commit: the actor's latest commit here, else their public profile email.
+      [ -n "$actor_email" ] || actor_email=$(gh api "repos/$GITHUB_REPOSITORY/commits?author=$GITHUB_ACTOR&per_page=1" --jq '.[0].commit.author.email // ""' 2>/dev/null) || actor_email=""
+      [ -n "$actor_email" ] || actor_email=$(gh api "users/$GITHUB_ACTOR" --jq '.email // ""' 2>/dev/null) || actor_email=""
       jq -c --arg app "${APP:-${GITHUB_REPOSITORY#*/}}" --arg env "$ENVIRONMENT" --arg stages "$STAGES" --arg actor "$GITHUB_ACTOR" \
-        --arg event "$GITHUB_EVENT_NAME" --argjson pr "$pr" \
+        --arg actor_email "$actor_email" --argjson pr "$pr" \
         --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{
         app: $app, environment: $env, stages: $stages, actor: $actor, run_url: $run_url, started: now | floor,
         sha: (.sha // ""), subject: ((.commit.message // "") | split("\n")[0] // ""), author: (.author.login // .commit.author.name // ""),
-        actor_email: (if $event == "push" or (.author.login // "") == $actor then .commit.author.email // "" else "" end),
+        actor_email: $actor_email,
         pr_author: ($pr.login // ""), pr_email: ($pr.email // "")
       }' <<<"$commit" | sed 's/^/meta=/' >> "$GITHUB_OUTPUT"
 
