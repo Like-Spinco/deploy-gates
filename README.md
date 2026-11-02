@@ -59,7 +59,7 @@ list the channel members) and must be invited to the channel.
 - The card is posted once and edited at each stage, which never notifies anyone.
 - Waiting for approval, deployed, failed and cancelled also get a reply in the card's
   thread that mentions every channel member: `@channel` is silent in threads.
-- Once approved, the Approval stage links the gate run and names the approver.
+- Once approved, the Approval stage links the gate run and mentions the approver, found by the email of their commits or profile (an edit notifies nobody).
 - `times` (JSON stage -> seconds) puts how long a finished stage took on its label, e.g.
   `Built in 4m 28s`, `Deployed in 1m 59s`, `Switched in 9s`; several objects are merged.
 - The done card names the time from approval to live, the done reply repeats it with the switch

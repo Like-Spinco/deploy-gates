@@ -25,6 +25,27 @@ dur() {
 api() { curl -sS --max-time 15 -X POST "https://slack.com/api/$1" -H "Authorization: Bearer $SLACK_TOKEN" \
   -H "Content-Type: application/json; charset=utf-8" --data "$2"; }
 
+# A Slack mention for a commit email; the GitHub login as plain text when Slack has no such user.
+mention() {
+  local email=$1 login=$2 id="" found
+  if [ -n "$email" ] && [[ "$email" != *noreply* ]]; then
+    found=$(curl -sS --max-time 15 -G -H "Authorization: Bearer $SLACK_TOKEN" https://slack.com/api/users.lookupByEmail \
+      --data-urlencode "email=$email")
+    id=$(jq -r 'if .ok then .user.id else "" end' <<<"$found" 2>/dev/null)
+    [ -n "$id" ] || echo "::warning title=Slack::users.lookupByEmail for $login: $(jq -r '.error // "no response"' <<<"$found" 2>/dev/null)" >&2
+  else
+    echo "::warning title=Slack::no commit email for $login; named without a mention" >&2
+  fi
+  if [ -n "$id" ]; then echo "<@$id>"; elif [ -n "$login" ]; then esc "$login"; fi
+}
+# A GitHub login's email: their latest commit here, else their public profile.
+email_of() {
+  local e
+  e=$(gh_api "repos/${GITHUB_REPOSITORY:-}/commits?author=$1&per_page=1" 2>/dev/null | jq -r '.[0]?.commit.author.email // ""' 2>/dev/null)
+  [ -n "$e" ] || e=$(gh_api "users/$1" 2>/dev/null | jq -r '.email // ""' 2>/dev/null)
+  echo "$e"
+}
+
 app=$(meta app) env=$(meta environment) sha=$(meta sha) run_url=$(meta run_url)
 subject=$(esc "$(meta subject)") author=$(esc "$(meta author)") actor=$(esc "$(meta actor)")
 read -ra stages <<<"$(meta stages)"
@@ -90,11 +111,12 @@ for s in "${stages[@]}"; do
   fi
   url=$(jq -r --arg s "$s" '.[$s] // ""' <<<"$links_json")
   [ "$s" = "$current" ] && [ -n "${JOB_URL:-}" ] && url=$JOB_URL
-  name=$s
+  name=$s after=""
   if [ "$mark" = "✅" ]; then
     t=$(took "$s")
     case "$s" in
-      Approval) name="Approved${approver:+ by $approver}${live_after:+ · live in $live_after}" url=${gate_url:-$url} ;;
+      # A mention inside link text is not rendered, so who approved goes after the link.
+      Approval) name="Approved" url=${gate_url:-$url} after="${approver:+ by $(mention "$(email_of "$approver")" "$approver")}${live_after:+ · live in $live_after}" ;;
       Build) name="Built${t:+ in $t}" ;;
       Deploy) name="Deployed${t:+ in $t}" ;;
       Switch) name="Switched${t:+ in $t}" ;;
@@ -110,7 +132,7 @@ for s in "${stages[@]}"; do
   else
     label=$name
   fi
-  line+="${line:+   }$mark $label"
+  line+="${line:+   }$mark $label$after"
 done
 
 note=${NOTE:-}
@@ -163,19 +185,6 @@ case "$state" in
 esac
 [ -n "${SLACK_TS:-}" ] || exit 0
 
-# A Slack mention for a commit email; the GitHub login as plain text when Slack has no such user.
-mention() {
-  local email=$1 login=$2 id="" found
-  if [ -n "$email" ] && [[ "$email" != *noreply* ]]; then
-    found=$(curl -sS --max-time 15 -G -H "Authorization: Bearer $SLACK_TOKEN" https://slack.com/api/users.lookupByEmail \
-      --data-urlencode "email=$email")
-    id=$(jq -r 'if .ok then .user.id else "" end' <<<"$found" 2>/dev/null)
-    [ -n "$id" ] || echo "::warning title=Slack::users.lookupByEmail for $login: $(jq -r '.error // "no response"' <<<"$found" 2>/dev/null)" >&2
-  else
-    echo "::warning title=Slack::no commit email for $login; named without a mention" >&2
-  fi
-  if [ -n "$id" ]; then echo "<@$id>"; elif [ -n "$login" ]; then esc "$login"; fi
-}
 who=$(mention "$(meta actor_email)" "$(meta actor)")
 case "$state" in
   waiting:*) who+="${APPROVERS:+ $APPROVERS}" ;;
