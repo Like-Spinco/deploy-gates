@@ -165,10 +165,14 @@ esac
 
 # A Slack mention for a commit email; the GitHub login as plain text when Slack has no such user.
 mention() {
-  local email=$1 login=$2 id=""
+  local email=$1 login=$2 id="" found
   if [ -n "$email" ] && [[ "$email" != *noreply* ]]; then
-    id=$(curl -sS --max-time 15 -G -H "Authorization: Bearer $SLACK_TOKEN" https://slack.com/api/users.lookupByEmail \
-      --data-urlencode "email=$email" | jq -r 'if .ok then .user.id else "" end' 2>/dev/null)
+    found=$(curl -sS --max-time 15 -G -H "Authorization: Bearer $SLACK_TOKEN" https://slack.com/api/users.lookupByEmail \
+      --data-urlencode "email=$email")
+    id=$(jq -r 'if .ok then .user.id else "" end' <<<"$found" 2>/dev/null)
+    [ -n "$id" ] || echo "::warning title=Slack::users.lookupByEmail for $login: $(jq -r '.error // "no response"' <<<"$found" 2>/dev/null)" >&2
+  else
+    echo "::warning title=Slack::no commit email for $login; named without a mention" >&2
   fi
   if [ -n "$id" ]; then echo "<@$id>"; elif [ -n "$login" ]; then esc "$login"; fi
 }
