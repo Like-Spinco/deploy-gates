@@ -16,12 +16,15 @@ app repo run (attempt 1)                         deploy-gates
                      └ deploy skipped                   Approve  (environment <repo>-<env>, reviewers)
                                                         │ approved
 app repo run (attempt 2) <──re-run the Approve job──────┘
-  Approve -> deploy
+  Approve (approved: yes) -> deploy
 ```
 
-The app's `Approve` job asks for approval on its first attempt and lets the deploy run
-on any later one. Re-running a job also re-runs the jobs that need it, and keeps the
-outputs of the others, so the deploy gets the image built in attempt 1.
+The app's `Approve` job calls `request-approval`, which looks for an approved
+`approve.yml` run for this run ID and commit (its title is
+`<repo> <env>: <sha> · run <run_id>`). Approved: `approved` is `true` and the deploy runs.
+Not approved: it opens a new button and the deploy is skipped, so a re-run by hand only
+asks again. Re-running a job also re-runs the jobs that need it, and keeps the outputs
+of the others, so the deploy gets the image built in attempt 1.
 
 ## Pieces
 

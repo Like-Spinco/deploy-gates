@@ -1,6 +1,6 @@
 name: "Deploy approval"
 
-run-name: "${{ inputs.repository }} ${{ inputs.env }}: ${{ inputs.sha }}"
+run-name: "${{ inputs.repository }} ${{ inputs.env }}: ${{ inputs.sha }} · run ${{ inputs.run_id }}"
 
 on:
   workflow_dispatch:

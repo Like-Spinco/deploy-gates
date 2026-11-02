@@ -52,7 +52,7 @@ gate_url="" approver="" approved_at=""
 if [ "$approval_at" -ge 0 ] && [ -n "$sha" ] && { [ "$state" = "done" ] || [ "$current_at" -gt "$approval_at" ]; }; then
   gates="repos/${GITHUB_REPOSITORY%%/*}/deploy-gates/actions/runs"
   gate=$(gh_api "$gates?event=workflow_dispatch&per_page=50" 2>/dev/null \
-    | jq -c --arg t " $env: ${sha:0:12}" '[.workflow_runs[]? | select(.display_title | endswith($t))][0] // empty' 2>/dev/null)
+    | jq -c --arg t " $env: ${sha:0:12}" '[.workflow_runs[]? | select(.display_title | endswith($t) or contains($t + " "))][0] // empty' 2>/dev/null)
   if [ -n "$gate" ]; then
     gate_id=$(jq -r .id <<<"$gate")
     gate_url=$(jq -r .html_url <<<"$gate")
