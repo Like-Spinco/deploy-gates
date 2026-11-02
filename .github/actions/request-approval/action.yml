@@ -1,5 +1,5 @@
 name: "Request approval"
-description: "Opens an Approve button in deploy-gates for this run; approving it re-runs the named job of this run."
+description: "Tells whether this run was approved in deploy-gates; if not, opens an Approve button there, and approving it re-runs the named job of this run."
 
 inputs:
   client-id:
@@ -15,14 +15,17 @@ inputs:
     description: "Commit being released"
     required: true
   job:
-    description: "Job of this run that approval re-runs; it must deploy on attempt 2+"
+    description: "Job of this run that approval re-runs; it deploys only when approved is true"
     required: false
     default: "Approve"
 
 outputs:
+  approved:
+    description: "true once a reviewer approved this run's button; a re-run without it only asks again"
+    value: ${{ steps.check.outputs.approved }}
   url:
     description: "The approval page"
-    value: ${{ steps.dispatch.outputs.url }}
+    value: ${{ steps.check.outputs.url || steps.dispatch.outputs.url }}
 
 runs:
   using: composite
@@ -36,7 +39,29 @@ runs:
       repositories: deploy-gates
       permission-actions: write
 
+  - id: check
+    shell: bash
+    env:
+      GH_TOKEN: ${{ steps.token.outputs.token }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      SHA: ${{ inputs.sha }}
+    run: |
+      gates="$GITHUB_REPOSITORY_OWNER/deploy-gates"
+      title="${GITHUB_REPOSITORY#*/} $ENVIRONMENT: $(cut -c1-12 <<<"$SHA") · run $GITHUB_RUN_ID"
+      approved=false
+      for id in $(gh api "repos/$gates/actions/workflows/approve.yml/runs?event=workflow_dispatch&per_page=100" \
+        | jq -r --arg t "$title" '.workflow_runs[] | select(.display_title == $t) | .id'); do
+        if gh api "repos/$gates/actions/runs/$id/approvals" | jq -e 'any(.[]; .state == "approved")' >/dev/null; then
+          approved=true
+          echo "url=$GITHUB_SERVER_URL/$gates/actions/runs/$id" >> "$GITHUB_OUTPUT"
+          break
+        fi
+      done
+      echo "approved=$approved" >> "$GITHUB_OUTPUT"
+      echo "Approved in deploy-gates: $approved"
+
   - id: dispatch
+    if: steps.check.outputs.approved != 'true'
     shell: bash
     env:
       GH_TOKEN: ${{ steps.token.outputs.token }}
@@ -52,4 +77,4 @@ runs:
       url=${url:-$GITHUB_SERVER_URL/$gates/actions/workflows/approve.yml}
       echo "url=$url" >> "$GITHUB_OUTPUT"
       echo "::notice title=Waiting for approval::$url"
-      echo "Not deployed yet. **[Approve]($url)** in deploy-gates, or re-run the $JOB job of this run." >> "$GITHUB_STEP_SUMMARY"
+      echo "Not deployed yet. **[Approve]($url)** in deploy-gates; a re-run of the $JOB job without it only asks again." >> "$GITHUB_STEP_SUMMARY"
