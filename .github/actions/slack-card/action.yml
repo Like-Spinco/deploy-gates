@@ -1,12 +1,12 @@
 name: "Slack release card"
-description: "Posts one Slack message per release and redraws it at each stage; waits, results and failures also get a thread reply that mentions the channel members."
+description: "Posts one Slack message per release and redraws it at each stage; waits, results and failures also get a thread reply that mentions who released it (found in Slack by commit email)."
 
 inputs:
   state:
     description: "start, running:<Stage>, waiting:<Stage>, done, failed:<Stage> or cancelled"
     required: true
   token:
-    description: "Slack bot token (chat:write, channels:read, groups:read); empty skips Slack"
+    description: "Slack bot token (chat:write, users:read, users:read.email); empty skips Slack"
     required: false
     default: ""
   channel:
@@ -53,6 +53,10 @@ inputs:
     description: "JSON of stage -> seconds it took, shown on finished stages; several objects are merged, empty values skipped"
     required: false
     default: ""
+  approvers:
+    description: "waiting: extra mentions in Slack syntax, e.g. <!subteam^S0123> or <@U0123>"
+    required: false
+    default: ""
   note:
     description: "Context line under the stages"
     required: false
@@ -90,10 +94,17 @@ runs:
       fi
       commit='{}'
       [ -z "$REF" ] || commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$REF" 2>/dev/null) || commit='{}'
+      # A merge commit's second parent is the last commit of the merged branch: its author wrote the change.
+      pr='{}' p2=$(jq -r '.parents[1].sha // empty' <<<"$commit")
+      [ -z "$p2" ] || pr=$(gh api "repos/$GITHUB_REPOSITORY/commits/$p2" --jq '{login: (.author.login // ""), email: (.commit.author.email // "")}' 2>/dev/null) || pr='{}'
+      jq -e 'type == "object"' <<<"$pr" >/dev/null 2>&1 || pr='{}'
       jq -c --arg app "${APP:-${GITHUB_REPOSITORY#*/}}" --arg env "$ENVIRONMENT" --arg stages "$STAGES" --arg actor "$GITHUB_ACTOR" \
+        --arg event "$GITHUB_EVENT_NAME" --argjson pr "$pr" \
         --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{
         app: $app, environment: $env, stages: $stages, actor: $actor, run_url: $run_url, started: now | floor,
-        sha: (.sha // ""), subject: ((.commit.message // "") | split("\n")[0] // ""), author: (.author.login // .commit.author.name // "")
+        sha: (.sha // ""), subject: ((.commit.message // "") | split("\n")[0] // ""), author: (.author.login // .commit.author.name // ""),
+        actor_email: (if $event == "push" or (.author.login // "") == $actor then .commit.author.email // "" else "" end),
+        pr_author: ($pr.login // ""), pr_email: ($pr.email // "")
       }' <<<"$commit" | sed 's/^/meta=/' >> "$GITHUB_OUTPUT"
 
   - id: card
@@ -108,6 +119,7 @@ runs:
       LINKS: ${{ inputs.links }}
       TIMES: ${{ inputs.times }}
       NOTE: ${{ inputs.note }}
+      APPROVERS: ${{ inputs.approvers }}
       STATE: ${{ inputs.state }}
       GH_TOKEN: ${{ inputs.github-token }}
     run: bash "$GITHUB_ACTION_PATH/slack-card.sh" "$STATE"

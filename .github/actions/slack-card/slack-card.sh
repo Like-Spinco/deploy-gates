@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # slack-card.sh <state>: posts the release card, or redraws it when SLACK_TS is set.
 #   states: start, running:<Stage>, waiting:<Stage>, done, failed:<Stage>, cancelled
-# Env: SLACK_TOKEN, SLACK_CHANNEL, SLACK_TS, SLACK_META (JSON: app, environment, stages, sha, subject, author, actor, run_url, started),
-#   APPROVE_URL, JOB_URL (the current stage), LINKS (JSON: stage -> URL), TIMES (JSON: stage -> seconds), NOTE (context line),
-#   GH_TOKEN (reads deploy-gates).
+# Env: SLACK_TOKEN, SLACK_CHANNEL, SLACK_TS, SLACK_META (JSON: app, environment, stages, sha, subject, author, actor, run_url, started,
+#   actor_email, pr_author, pr_email), APPROVE_URL, JOB_URL (the current stage), LINKS (JSON: stage -> URL), TIMES (JSON: stage -> seconds),
+#   NOTE (context line), APPROVERS (Slack mentions on waiting), GH_TOKEN (reads deploy-gates).
 # Writes ts= on a post. Slack trouble never fails a deploy: every error is a warning.
 set -uo pipefail
 
@@ -163,14 +163,25 @@ case "$state" in
 esac
 [ -n "${SLACK_TS:-}" ] || exit 0
 
-me=$(curl -sS --max-time 15 -H "Authorization: Bearer $SLACK_TOKEN" https://slack.com/api/auth.test | jq -r '.user_id // ""')
-members=$(curl -sS --max-time 15 -G -H "Authorization: Bearer $SLACK_TOKEN" https://slack.com/api/conversations.members \
-  --data-urlencode "channel=$SLACK_CHANNEL" --data-urlencode limit=200)
-if [ "$(jq -r .ok <<<"$members")" = true ]; then
-  note="$(jq -r --arg me "$me" '[.members[] | select(. != $me) | "<@\(.)>"] | join(" ")' <<<"$members") $note"
-else
-  echo "::warning title=Slack::conversations.members: $(jq -r '.error // "unknown error"' <<<"$members"); the reply mentions nobody"
-fi
+# A Slack mention for a commit email; the GitHub login as plain text when Slack has no such user.
+mention() {
+  local email=$1 login=$2 id=""
+  if [ -n "$email" ] && [[ "$email" != *noreply* ]]; then
+    id=$(curl -sS --max-time 15 -G -H "Authorization: Bearer $SLACK_TOKEN" https://slack.com/api/users.lookupByEmail \
+      --data-urlencode "email=$email" | jq -r 'if .ok then .user.id else "" end' 2>/dev/null)
+  fi
+  if [ -n "$id" ]; then echo "<@$id>"; elif [ -n "$login" ]; then esc "$login"; fi
+}
+who=$(mention "$(meta actor_email)" "$(meta actor)")
+case "$state" in
+  waiting:*) who+="${APPROVERS:+ $APPROVERS}" ;;
+  failed:*)
+    if [ -n "$(meta pr_author)" ] && [ "$(meta pr_author)" != "$(meta actor)" ]; then
+      who+=" $(mention "$(meta pr_email)" "$(meta pr_author)")"
+    fi ;;
+  cancelled) who="" ;;
+esac
+[ -z "$who" ] || note="$who $note"
 
 reply=$(jq -nc --arg channel "$SLACK_CHANNEL" --arg ts "$SLACK_TS" --arg text "$note" \
   '{channel: $channel, thread_ts: $ts, text: $text, unfurl_links: false, unfurl_media: false}')
