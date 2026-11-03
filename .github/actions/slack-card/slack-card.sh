@@ -118,6 +118,7 @@ for s in "${stages[@]}"; do
       # A mention inside link text is not rendered, so who approved goes after the link.
       Approval) name="Approved" url=${gate_url:-$url} after="${approver:+ by $(mention "$(email_of "$approver")" "$approver")}${live_after:+ · live in $live_after}" ;;
       Build) name="Built${t:+ in $t}" ;;
+      Migrate) name="Migrated${t:+ in $t}" ;;
       Deploy) name="Deployed${t:+ in $t}" ;;
       Switch) name="Switched${t:+ in $t}" ;;
       *) name="$s${t:+ · $t}" ;;
