@@ -1,6 +1,6 @@
 name: "Frontend deploy"
 
-run-name: "Frontend ${{ inputs.env }}: ${{ inputs.sha }}"
+run-name: "Frontend ${{ inputs.env }}: ${{ inputs.sha }}${{ inputs.stop_only == 'true' && ' · stop old slot' || '' }}"
 
 on:
   workflow_dispatch:
@@ -14,6 +14,10 @@ on:
       sha:
         description: "Commit"
         required: true
+      stop_only:
+        description: "Traffic already moved without approval: only offer to stop the old slot"
+        required: false
+        default: "false"
 
 permissions: {}
 
@@ -32,15 +36,29 @@ jobs:
     name: Release
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
     - &check
       name: Check inputs
       env:
         ENVIRONMENT: ${{ inputs.env }}
         SHA: ${{ inputs.sha }}
+        STOP_ONLY: ${{ inputs.stop_only }}
       run: |
-        [[ "$ENVIRONMENT" =~ ^[a-z0-9-]+$ && "$RUN_ID" =~ ^[0-9]+$ && "$SHA" =~ ^[0-9a-f]{7,40}$ ]] \
+        [[ "$ENVIRONMENT" =~ ^[a-z0-9-]+$ && "$RUN_ID" =~ ^[0-9]+$ && "$SHA" =~ ^[0-9a-f]{7,40}$ && "$STOP_ONLY" =~ ^(true|false)$ ]] \
           || { echo "::error::malformed inputs"; exit 1; }
+
+    # Without reviewers the buttons would act on dispatch, before anyone clicks.
+    - name: Check the gate
+      env:
+        GH_TOKEN: ${{ github.token }}
+        ENVIRONMENT: ${{ inputs.env }}
+      run: |
+        gate="frontend-$ENVIRONMENT"
+        rules=$(gh api "repos/$GITHUB_REPOSITORY/environments/$gate" --jq '[.protection_rules[]?.type] | join(",")' 2>/dev/null) \
+          || { echo "::error::environment $gate does not exist in $GITHUB_REPOSITORY; create it with required reviewers"; exit 1; }
+        [[ ",$rules," == *,required_reviewers,* ]] || { echo "::error::environment $gate has no required reviewers"; exit 1; }
 
     - name: Links
       env:
@@ -57,6 +75,7 @@ jobs:
   switch:
     name: "Switch traffic"
     needs: info
+    if: inputs.stop_only != 'true'
     runs-on: ubuntu-24.04
     environment: &environment
       name: frontend-${{ inputs.env }}
@@ -88,7 +107,8 @@ jobs:
   # Optional: without it the old slot stops at the end of the skew window.
   stop-old:
     name: "Stop the old slot now"
-    needs: switch
+    needs: [info, switch]
+    if: ${{ !cancelled() && needs.info.result == 'success' && (needs.switch.result == 'success' || (inputs.stop_only == 'true' && needs.switch.result == 'skipped')) }}
     runs-on: ubuntu-24.04
     environment: *environment
     timeout-minutes: 20
